@@ -35,13 +35,6 @@ catch
     % Some adaptors don't support ReturnedColorspace; handled below
 end
 
-% Request high-FPS + disable low-light/auto exposure
-try
-    disable_low_light_compensation(vid);   % uses the live handle, no reopen
-catch ME
-    fprintf('[roi_stream] LLC/60fps tuning skipped: %s\n', ME.message);
-end
-
 src = getselectedsource(vid);
 try, set(src,'FrameRate'), end   % see available values
 try, disp(get(src,'FrameRate')), end
@@ -122,6 +115,19 @@ S.trace_head     = 0;                       % 0-based count, 1..cap indices used
 S.trace_t        = nan(cap,1);              % seconds since start
 S.trace_means    = nan(cap,K,'single');
 
+% Setup HDF5 writer for file output 
+if ~isfield(opts,'H5Path') || isempty(opts.H5Path)
+    ts = string(datetime('now','TimeZone','local','Format','yyyyMMdd_HHmmss'));
+    opts.H5Path = fullfile(pwd, "traces_" + ts + ".h5");
+end
+meta = struct('adaptor', string(adaptor), ...
+              'device_id', int32(deviceID), ...
+              'format', string(format), ...
+              'resolution', int32([W H]), ...
+              'start_iso8601', char(datetime('now','TimeZone','local','Format','yyyy-MM-dd''T''HH:mm:ss.SSSZ')));
+S.h5w = H5TracesWriter(opts.H5Path, roi.circles, meta, 240);
+
+
 vid.UserData = S;
 
 % ---- Register callback (1 call per acquired frame)
@@ -156,16 +162,6 @@ f16   = to_uint16_gray(frame);          % robust, no clipping/scale surprises
 % -- ROI means (masked sums)
 means = roi_compute_means(f16, S.roi);  % single row vector, per-ROI means
 
-% ---- Diagnostics: is the image changing?
-if ~isfield(S,'debug_crc'), S.debug_crc = uint64(0); S.static_count = 0; end
-crc = uint64(sum(uint64(f16(1:8:end, 1:8:end)), 'all'));  % light-weight checksum
-if crc == S.debug_crc
-    S.static_count = S.static_count + 1;
-else
-    S.static_count = 0;
-    S.debug_crc = crc;
-end
-
 % -- Timing/FPS
 t = toc(S.tic0);
 S.framesSeen = S.framesSeen + 1;
@@ -198,8 +194,10 @@ S.trace_means(head,:) = means;
 S.pending_n = S.pending_n + 1;
 S.pending_t(S.pending_n) = t;
 S.pending_means(S.pending_n,:) = means;
+
+% Append to HDF5 file 
 if S.pending_n >= S.framesPerChunk
-    % >>> PLACEHOLDER for writing S.pending_t/measures to disk
+    S.h5w.append(S.pending_t(1:S.pending_n), S.pending_means(1:S.pending_n,:), []);  % third arg = dff if you add it
     S.pending_n = 0;
 end
 
