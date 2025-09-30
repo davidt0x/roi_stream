@@ -12,7 +12,7 @@ minSepPx  = 4;                      % min center-to-center gap beyond radii (0 =
 seed      = 42;                     % [] for non-reproducible
 
 % GUI
-guiOpts   = struct('PlotWindowSec', 60, 'UpdatePeriod', 0.2, 'ImagePeriod', 0.33);
+guiOpts   = struct('PlotWindowSec', 60, 'UpdatePeriod', 1/30, 'ImagePeriod', 1/30);
 
 % Streamer opts (extra fields are ignored if your roi_stream doesn’t use them)
 streamOpts = struct('TraceBufferSec', 600, 'FramesPerChunk', 120);
