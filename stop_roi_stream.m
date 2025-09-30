@@ -1,6 +1,7 @@
-function stop_roi_stream(vid)
-if nargin < 1 || ~isvalid(vid), return; end
+function filename = stop_roi_stream(vid)
+if nargin < 1 || ~isvalid(vid), filename = ''; return; end
 S = vid.UserData;
+filename = '';
 try, stop(vid); catch, end
 
 elapsed = toc(S.tic0);
@@ -9,6 +10,7 @@ avgFPS  = S.framesSeen / max(elapsed, eps);
 % Flush any remaining rows to disk via the writer
 try
     if isfield(S,'h5w') && ~isempty(S.h5w)
+        filename = char(S.h5w.path);
         if S.pending_n > 0
             S.h5w.append(S.pending_t(1:S.pending_n), S.pending_means(1:S.pending_n,:), []);
             S.pending_n = 0;

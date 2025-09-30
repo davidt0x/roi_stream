@@ -21,8 +21,8 @@ run_random_rois
 
 %%
 % Let it run, then stop:
-stop_roi_stream(vid);
+trace_file_name = stop_roi_stream(vid);
 
 %%
-h5_traces_viewer('traces_20250912_131009.h5')
+h5_traces_viewer(trace_file_name)
 
