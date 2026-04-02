@@ -4,6 +4,22 @@ function roi_on_frame(obj, ~)
 S = obj.UserData;
 
 frame = getdata(obj, 1, 'native');
+% If callback processing falls behind acquisition, unread frames accumulate
+% in the videoinput memory log and can eventually exhaust RAM. Drain any
+% backlog after taking one frame so memory stays bounded.
+backlog = obj.FramesAvailable;
+if backlog > 0
+    S.framesDropped = S.framesDropped + backlog;
+    try
+        flushdata(obj, 'triggers');
+    catch
+        try
+            flushdata(obj);
+        catch
+        end
+    end
+end
+
 if ndims(frame) == 3
     frame = mean(frame, 3);
 end
