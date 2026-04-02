@@ -7,20 +7,38 @@ roiCircles = [
     420 300 30   % ROI 2
 ];
 
-% --- WINVIDEO (e.g., generic USB camera)
-%vid = roi_stream('linuxvideo', 1, '', roiCircles);  % auto-picks device & format
-%vid = roi_stream('winvideo', 1, '', roiCircles);  % auto-picks device & format
-%vid = roi_stream('winvideo', 2, 'I420_1280x720', roiCircles);  % auto-picks device & format
+% --- Stream options
+streamOpts = struct( ...
+    'EnableLogging', true, ...   % set true to write HDF5 traces
+    'PrintFPSPeriod', 1.0, ...
+    'TraceBufferSec', 600, ...
+    'ReturnColorSpace', 'grayscale');
 
+% --- Camera setup (matched to Polina GUI path)
+vid = videoinput("hamamatsu", 1, "MONO16_BIN2x2_1152x1152_Fast");
+vid.ROIPosition = [0 160 576 238] * 2;
 
-% --- or HAMAMATSU (DCAM adaptor)
-vid = roi_stream('hamamatsu', [], '', roiCircles);
+src = getselectedsource(vid);
+try, src.OutputTriggerKindOpt3 = "exposure"; catch, end
+try, src.OutputTriggerPolarityOpt3 = "positive"; catch, end
+try, src.OutputTriggerKindOpt2 = "exposure"; catch, end
+try, src.OutputTriggerPolarityOpt2 = "positive"; catch, end
+try, src.ExposureTime = round(1/80, 4); catch, end
+
+vid.TriggerRepeat = 0;
+vid.FramesPerTrigger = Inf;
+triggerconfig(vid, 'immediate');
+vid.LoggingMode = 'memory';
+
+% Attach ROI extraction/logging and start
+info = roi_attach_to_video(vid, roiCircles, streamOpts); %#ok<NASGU>
+start(vid);
 
 % 3) Launch the GUI (updates every second, plots last 60 s)
-h = roi_stream_gui(vid, struct('PlotWindowSec',60, 'UpdatePeriod',1.0));
+h = roi_stream_gui(vid, struct( ...
+    'PlotWindowSec', 10, ...
+    'UpdatePeriod', 1.0));
 
-%%
-%run_random_rois
 
 %%
 % Let it run, then stop:
