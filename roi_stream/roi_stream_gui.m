@@ -18,6 +18,7 @@ opts = filldefaults(opts, struct( ...
     'PlotWindowSec', 60, ...
     'UpdatePeriod',  0.5, ...       % UI refresh period (s)
     'ImagePeriod',   0.5, ...       % image refresh period (s)
+    'TracePeriod',   1.0, ...       % trace redraw period (s)
     'MaxPlotPoints', 2500, ...
     'CLim',          [0 65535] ...
 ));
@@ -72,7 +73,9 @@ winEdit = uicontrol('Style','edit','Units','normalized','Position',[0.16 0.48 0.
 uicontrol('Style','text','Units','normalized','Position',[0.27 0.48 0.08 0.03], ...
     'String','Start (s):','BackgroundColor','w','HorizontalAlignment','left');
 startSlider = uicontrol('Style','slider','Units','normalized','Position',[0.35 0.485 0.61 0.025], ...
-    'Min',0, 'Max',max(1,opts.PlotWindowSec), 'Value',0, 'Callback', @(~,~)refreshNow());
+    'Min',0, 'Max',max(1,opts.PlotWindowSec), 'Value',0, 'Callback', @onStartChanged);
+autoScrollChk = uicontrol('Style','checkbox','Units','normalized','Position',[0.06 0.52 0.16 0.03], ...
+    'String','Auto-scroll','BackgroundColor','w','Value',1, 'Callback', @(~,~)refreshNow());
 
 uicontrol('Style','text','Units','normalized','Position',[0.72 0.90 0.24 0.03],...
     'String','Selected ROI(s):','BackgroundColor','w','HorizontalAlignment','left');
@@ -82,8 +85,9 @@ roiList = uicontrol('Style','listbox','Units','normalized','Position',[0.72 0.56
 
 % Remember GUI state
 G = struct('lastImgUpdate', -inf, 'imgAx',axImg, 'traceAx',axTr, ...
+    'lastTraceUpdate', -inf, ...
     'imgHandle', imgH, 'ln', ln, 'roiCirc', roiCirc, ...
-    'startSlider', startSlider, 'winEdit', winEdit, 'roiList', roiList, ...
+    'startSlider', startSlider, 'winEdit', winEdit, 'roiList', roiList, 'autoScrollChk', autoScrollChk, ...
     'statusTxt', statusTxt);
 setappdata(hFig, 'roi_gui', G);
 
@@ -108,13 +112,17 @@ start(tm);
         % Update image at throttled cadence
         G = getappdata(hFig,'roi_gui');
         if (S.lastFrameTime - G.lastImgUpdate) >= opts.ImagePeriod && ~isempty(S.lastFrame)
-            set(findobj(axImg,'Type','image'),'CData', S.lastFrame, 'CDataMapping','scaled');
+            set(G.imgHandle,'CData', S.lastFrame, 'CDataMapping','scaled');
             G.lastImgUpdate = S.lastFrameTime;
-            setappdata(hFig,'roi_gui',G);
         end
 
-        % Update traces
-        update_traces(axTr, S, opts, ln, startSlider, winEdit, roiList);
+        % Update traces at a slower cadence than status/image updates.
+        if (S.lastFrameTime - G.lastTraceUpdate) >= opts.TracePeriod
+            update_traces(axTr, S, opts, ln, startSlider, winEdit, roiList, autoScrollChk);
+            G.lastTraceUpdate = S.lastFrameTime;
+        end
+
+        setappdata(hFig,'roi_gui',G);
 
         drawnow limitrate nocallbacks
     end
@@ -136,8 +144,13 @@ start(tm);
         if ~ishandle(hFig) || ~isvalid(vid), return; end
         S = get_user_state(vid);
         if isempty(S), return; end
-        update_traces(axTr, S, opts, ln, startSlider, winEdit, roiList);
+        update_traces(axTr, S, opts, ln, startSlider, winEdit, roiList, autoScrollChk);
         drawnow limitrate nocallbacks
+    end
+
+    function onStartChanged(~,~)
+        set(autoScrollChk,'Value',0);  % manual start position disables auto-scroll
+        refreshNow();
     end
 
     function onClose(~,~)
@@ -160,7 +173,7 @@ end
 
 % ---- Helpers (file-local) ------------------------------------------------
 
-function update_traces(axTr, S, opts, ln, startSlider, winEdit, roiList)
+function update_traces(axTr, S, opts, ln, startSlider, winEdit, roiList, autoScrollChk)
 % Read GUI controls
 winSec = str2double(get(winEdit,'String'));
 if isnan(winSec) || winSec <= 0, winSec = opts.PlotWindowSec; end
@@ -175,7 +188,11 @@ end
 tEnd = tt(end);
 % Ensure slider has increasing bounds
 set(startSlider,'Min',0, 'Max', max(tEnd, eps));
-t0 = get(startSlider,'Value');
+if get(autoScrollChk,'Value') == 1
+    t0 = max(tEnd - winSec, 0);
+else
+    t0 = get(startSlider,'Value');
+end
 t0 = min(max(t0, 0), max(tEnd - winSec, 0));
 set(startSlider,'Value', t0);
 
@@ -277,9 +294,7 @@ order = [head+1:cap, 1:head];
 order = order(valid(order));
 tt = tRing(order);
 YY = yRing(order, :);
-% Ensure strictly increasing
-[tt, order2] = sort(tt);
-YY = YY(order2, :);
+% order is already oldest->newest for this ring layout
 end
 
 function S = get_user_state(vid)
