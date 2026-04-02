@@ -29,11 +29,6 @@ vid.TriggerRepeat    = 0;
 vid.FramesPerTrigger = inf;
 triggerconfig(vid,'immediate');
 vid.LoggingMode = 'memory';
-try
-    vid.ReturnedColorspace = opts.ReturnColorSpace;
-catch
-    % Some adaptors don't support ReturnedColorspace; handled below
-end
 
 src = getselectedsource(vid);
 try, set(src,'FrameRate'), end   % see available values
@@ -80,128 +75,24 @@ catch
 end
 
 
-% ---- Precompute circular ROI indices
-vr = vid.VideoResolution;  % [W H]
-W = vr(1); H = vr(2);
-roi = build_circle_indices(H, W, roiCircles);  % .idx (cell), .npix (uint32), .circles
-
-% ---- Initialize per-stream state (stored in UserData)
-S = struct();
-S.roi = roi;
-
-S.tic0        = tic;       % wall clock start
-S.lastPrint   = 0;         % last FPS print (s)
-S.printEvery  = opts.PrintFPSPeriod;
-S.framesSeen  = 0;
-S.framesDropped = 0;       % placeholder for future drop-accounting
-S.frametimes  = [];        % recent times for instantaneous FPS calc
-S.maxFT       = max(2*opts.FramesPerChunk, 300);
-
-% chunk buffer (optional write hook)
-S.framesPerChunk = opts.FramesPerChunk;
-S.pending_n      = 0;
-S.pending_t      = zeros(opts.FramesPerChunk,1,'double');
-S.pending_means  = zeros(opts.FramesPerChunk, numel(roi.npix), 'single');
-
-% preview frame (read by GUI timer)
-S.lastFrame      = [];     % uint16, HxW
-S.lastFrameTime  = 0;
-
-% rolling trace buffer (GUI plot reads this)
-cap = max(60 * opts.TraceBufferSec, 6000);  % ensure sensible minimum
-K   = numel(roi.npix);
-S.trace_capacity = cap;
-S.trace_head     = 0;                       % 0-based count, 1..cap indices used
-S.trace_t        = nan(cap,1);              % seconds since start
-S.trace_means    = nan(cap,K,'single');
-
-% Setup HDF5 writer for file output 
 if ~isfield(opts,'H5Path') || isempty(opts.H5Path)
     ts = string(datetime('now','TimeZone','local','Format','yyyyMMdd_HHmmss'));
     opts.H5Path = fullfile(pwd, "traces_" + ts + ".h5");
 end
-meta = struct('adaptor', string(adaptor), ...
-              'device_id', int32(deviceID), ...
-              'format', string(format), ...
-              'resolution', int32([W H]), ...
-              'start_iso8601', char(datetime('now','TimeZone','local','Format','yyyy-MM-dd''T''HH:mm:ss.SSSZ')));
-S.h5w = H5TracesWriter(opts.H5Path, roi.circles, meta, 240);
-
-
-vid.UserData = S;
-
-% ---- Register callback (1 call per acquired frame)
-vid.FramesAcquiredFcnCount = 1;
-vid.FramesAcquiredFcn      = @onFrame;
+opts.Meta = struct('adaptor', string(adaptor), ...
+                   'device_id', int32(deviceID), ...
+                   'format', string(format));
+info = roi_attach_to_video(vid, roiCircles, opts);
 
 % ---- Start streaming and return handle
 start(vid);
 
+W = info.Resolution(1);
+H = info.Resolution(2);
 fprintf('[roi_stream] Started %s (device %d, format %s), %dx%d px\n', ...
     adaptor, deviceID, format, W, H);
 fprintf('[roi_stream] %d circular ROI(s). FPS every %.1fs. Call stop_roi_stream(vid) to stop.\n', ...
-    numel(roi.npix), S.printEvery);
-end
-
-
-function onFrame(obj, ~)
-% One invocation per acquired frame.
-S = obj.UserData;
-
-% -- Get one frame in native class
-frame = getdata(obj, 1, 'native');
-
-% -- Ensure single-channel
-if ndims(frame) == 3
-    frame = mean(frame, 3);  % fast luma
-end
-
-% -- Convert to uint16
-f16   = to_uint16_gray(frame);          % robust, no clipping/scale surprises
-
-% -- ROI means (masked sums)
-means = roi_compute_means(f16, S.roi);  % single row vector, per-ROI means
-
-% -- Timing/FPS
-t = toc(S.tic0);
-S.framesSeen = S.framesSeen + 1;
-S.frametimes(end+1) = t; %#ok<AGROW>
-if numel(S.frametimes) > S.maxFT
-    S.frametimes = S.frametimes(end-S.maxFT+1:end);
-end
-if (t - S.lastPrint) >= S.printEvery
-    ft = S.frametimes;
-    fps = NaN;
-    if numel(ft) >= 2, fps = (numel(ft)-1) / max(ft(end)-ft(1), eps); end
-    fprintf('[%7.3fs] FPS: %5.1f   frames=%d   dropped=%d\n', ...
-        t, fps, S.framesSeen, S.framesDropped);
-    S.lastPrint = t;
-end
-
-% -- Update preview frame
-S.lastFrame     = f16;
-S.lastFrameTime = t;
-
-% -- Update ring buffer for traces
-cap  = S.trace_capacity;
-head = S.trace_head + 1;
-if head > cap, head = 1; end
-S.trace_head     = head;
-S.trace_t(head)  = t;
-S.trace_means(head,:) = means;
-
-% -- Optional: append to in-memory chunk (hook for file writing)
-S.pending_n = S.pending_n + 1;
-S.pending_t(S.pending_n) = t;
-S.pending_means(S.pending_n,:) = means;
-
-% Append to HDF5 file 
-if S.pending_n >= S.framesPerChunk
-    S.h5w.append(S.pending_t(1:S.pending_n), S.pending_means(1:S.pending_n,:), []);  % third arg = dff if you add it
-    S.pending_n = 0;
-end
-
-obj.UserData = S;   % write back
+    info.NumROIs, opts.PrintFPSPeriod);
 end
 
 
@@ -234,20 +125,4 @@ end
 mono = contains(fmts, {'MONO16','Mono16','GRAY','Y800','Mono8'}, 'IgnoreCase', true);
 idx = find(mono, 1); if isempty(idx), idx = 1; end
 format = fmts{idx};
-end
-
-function roi = build_circle_indices(H, W, circles)
-% circles: Nx3 [xc, yc, r] (1-based)
-N = size(circles,1);
-roi.idx = cell(N,1);
-roi.npix = zeros(N,1,'uint32');
-roi.circles = circles;
-[xg, yg] = meshgrid(1:W, 1:H);
-for k = 1:N
-    xc = circles(k,1); yc = circles(k,2); r = circles(k,3);
-    mask = (xg - xc).^2 + (yg - yc).^2 <= r.^2;
-    idx = find(mask);
-    roi.idx{k} = idx;
-    roi.npix(k) = uint32(numel(idx));
-end
 end

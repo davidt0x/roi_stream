@@ -6,7 +6,7 @@ function test_roi_core()
 
 H = 200; W = 300;
 roiCircles = [60 80 20; 220 140 25];  % [xc yc r]
-roi = build_circle_indices(H, W, roiCircles);
+roi = roi_build_circle_indices(H, W, roiCircles);
 
 % Precompute coordinate grids once (H×W)
 [xg, yg] = meshgrid(1:W, 1:H);
@@ -34,19 +34,4 @@ mB = roi_compute_means(fB, roi);
 assert(mA(2) > mA(1) && mB(1) > mB(2), 'Moving spot should swap which ROI is brighter');
 
 disp('✅ test_roi_core passed');
-end
-
-function roi = build_circle_indices(H, W, circles)
-% circles: Nx3 [xc, yc, r] (1-based pixel coords)
-N = size(circles,1);
-roi.idx = cell(N,1);
-roi.npix = zeros(N,1,'uint32');
-roi.circles = circles;
-[xg, yg] = meshgrid(1:W, 1:H);
-for k = 1:N
-    xc = circles(k,1); yc = circles(k,2); r = circles(k,3);
-    mask = (xg - xc).^2 + (yg - yc).^2 <= r.^2;
-    roi.idx{k} = find(mask);
-    roi.npix(k) = uint32(nnz(mask));
-end
 end
